@@ -797,3 +797,20 @@ Executable idris-node
 
   ghc-prof-options: -auto-all -caf-all
   ghc-options:      -threaded -rtsopts -funbox-strict-fields
+
+Executable benchmark
+  Main-is:        Benchmark.hs
+  hs-source-dirs: main
+
+  Build-depends:  idris
+                , base
+                , filepath
+                , haskeline >= 0.7
+                , transformers
+                , strict
+                , criterion
+                , syb
+                , trifecta
+
+  ghc-prof-options: -auto-all -caf-all
+  ghc-options:      -threaded -rtsopts -funbox-strict-fields -main-is Benchmark.main

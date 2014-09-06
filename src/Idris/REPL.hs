@@ -1485,7 +1485,8 @@ idrisMain opts =
        let idesock = IdeslaveSocket `elem` opts
        when (idesl) $ ideslaveStart idesock orig inputs
        ok <- noErrors
-       when (not ok) $ runIO (exitWith (ExitFailure 1))
+       --when (not ok) $ runIO (exitWith (ExitFailure 1))
+       return ()
   where
     makeOption (OLogging i) = setLogLevel i
     makeOption TypeCase = setTypeCase True
