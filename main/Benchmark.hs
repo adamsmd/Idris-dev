@@ -22,6 +22,7 @@ import Text.Trifecta hiding (whiteSpace)
 --import Text.Parsec
 --import Text.Parsec.Indentation
 --import Text.Parsec.Indentation.Char
+import Text.Trifecta.Indentation
 
 data Mode = Check | Benchmark | Profile
 
@@ -113,19 +114,19 @@ deriving instance Data ProvideWhat
 --deriving instance Data (Binder Raw)
 
 deriving instance Typeable Idris.AbsSyntaxTree.Fixity
-deriving instance Typeable1 PClause'
-deriving instance Typeable1 PArg'
-deriving instance Typeable1 PData'
-deriving instance Typeable1 PDecl'
-deriving instance Typeable1 Binder
+deriving instance Typeable PClause'
+deriving instance Typeable PArg'
+deriving instance Typeable PData'
+deriving instance Typeable PDecl'
+deriving instance Typeable Binder
 deriving instance Typeable PTerm
 deriving instance Typeable FnOpt
 deriving instance Typeable Const
 deriving instance Typeable UExp
 deriving instance Typeable Err'
-deriving instance Typeable1 PTactic'
-deriving instance Typeable1 TT
-deriving instance Typeable1 PDo'
+deriving instance Typeable PTactic'
+deriving instance Typeable TT
+deriving instance Typeable PDo'
 deriving instance Typeable Name
 deriving instance Typeable NameType
 deriving instance Typeable Plicity
@@ -135,7 +136,7 @@ deriving instance Typeable Raw
 deriving instance Typeable SSymbol
 deriving instance Typeable Syntax
 deriving instance Typeable SynContext
-deriving instance Typeable1 DSL'
+deriving instance Typeable DSL'
 deriving instance Typeable Using
 deriving instance Typeable SyntaxInfo
 deriving instance Typeable ErrorReportPart
@@ -268,11 +269,12 @@ instance Data (PDecl' PTerm) where
 
 loadSource'' :: IState -> FilePath -> String -> Result ([String], [(String, Maybe String, FC)], [[PDecl]])
 loadSource'' i fname input =
-    runparser (do whiteSpace
-                  mname <- moduleHeader
-                  imps <- many import_
-                  decls <- many (decl (defaultSyntax {syn_namespace = reverse mname }))
-                  eof
+    runparserStrict
+              (do whiteSpace
+                  mname <- absoluteIndentation moduleHeader
+                  imps <- liftM concat $ many (absoluteIndentation $ semiSepNonNull import_)
+                  decls <- liftM concat $ many (absoluteIndentation $ semiSepNonNull $ decl (defaultSyntax {syn_namespace = reverse mname }))
+                  localTokenMode (const Any) eof
                   return (mname, imps, decls))
       i fname input
 

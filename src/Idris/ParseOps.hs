@@ -60,24 +60,19 @@ toTable fs = map (map toBin)
 -- | Binary operator
 binary :: String -> (FC -> PTerm -> PTerm -> PTerm) -> Assoc -> Operator IdrisParser PTerm
 binary name f = Infix (do fc <- getFC
-                          indentPropHolds gtProp
                           reservedOp name
-                          indentPropHolds gtProp
                           return (f fc))
 
 -- | Prefix operator
 prefix :: String -> (FC -> PTerm -> PTerm) -> Operator IdrisParser PTerm
 prefix name f = Prefix (do reservedOp name
                            fc <- getFC
-                           indentPropHolds gtProp
                            return (f fc))
 
 -- | Backtick operator
 backtick :: Operator IdrisParser PTerm
-backtick = Infix (do indentPropHolds gtProp
-                     lchar '`'; n <- fnName
+backtick = Infix (do lchar '`'; n <- fnName
                      lchar '`'
-                     indentPropHolds gtProp
                      fc <- getFC
                      return (\x y -> PApp fc (PRef fc n) [pexp x, pexp y])) AssocNone
 
@@ -113,9 +108,7 @@ Fixity ::=
 @
 -}
 fixity :: IdrisParser PDecl
-fixity = do pushIndent
-            f <- fixityType; i <- natural; ops <- sepBy1 operator (lchar ',')
-            terminator
+fixity = do f <- fixityType; i <- natural; ops <- sepBy1 operator (lchar ',')
             let prec = fromInteger i
             istate <- get
             let infixes = idris_infixes istate

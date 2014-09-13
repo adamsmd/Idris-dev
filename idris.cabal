@@ -700,6 +700,7 @@ Library
                 , deepseq
                 , zlib
                 , optparse-applicative >= 0.10
+                , indentation >= 0.2.0.0
   Extensions:     MultiParamTypeClasses
                 , DeriveFoldable
                 , DeriveTraversable
@@ -811,6 +812,7 @@ Executable benchmark
                 , criterion
                 , syb
                 , trifecta
+                , indentation >= 0.2.0.0
 
   ghc-prof-options: -auto-all -caf-all
   ghc-options:      -threaded -rtsopts -funbox-strict-fields -main-is Benchmark.main

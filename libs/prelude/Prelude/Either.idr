@@ -1,4 +1,4 @@
- module Prelude.Either
+module Prelude.Either
 
 import Builtins
 

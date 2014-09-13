@@ -24,7 +24,7 @@ import Data.Char(toLower)
 import qualified Data.ByteString.UTF8 as UTF8
 
 parseCmd :: IState -> String -> String -> Result Command
-parseCmd i inputname = P.runparser pCmd i inputname
+parseCmd i inputname = P.runparserLax pCmd i inputname
 
 cmd :: [String] -> P.IdrisParser ()
 cmd xs = try (do P.lchar ':'; docmd (sortBy (\x y -> compare (length y) (length x)) xs))

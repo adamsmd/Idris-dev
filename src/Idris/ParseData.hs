@@ -5,6 +5,7 @@ import Prelude hiding (pi)
 
 import Text.Trifecta.Delta
 import Text.Trifecta hiding (span, stringLiteral, charLiteral, natural, symbol, char, string, whiteSpace)
+import Text.Trifecta.Indentation
 import Text.Parser.LookAhead
 import Text.Parser.Expression
 import qualified Text.Parser.Token as Tok
@@ -42,7 +43,7 @@ Record ::=
     DocComment Accessibility? 'record' FnName TypeSig 'where' OpenBlock Constructor KeepTerminator CloseBlock;
 -}
 record :: SyntaxInfo -> IdrisParser PDecl
-record syn = do (doc, acc, opts) <- try (do
+record syn = do (doc, acc, opts) <- try (localTokenMode (const Ge) $ do
                       doc <- option noDocs docComment
                       acc <- optional accessibility
                       opts <- dataOpts []
@@ -54,7 +55,7 @@ record syn = do (doc, acc, opts) <- try (do
                 ty <- typeExpr (allowImp syn)
                 let tyn = expandNS syn tyn_in
                 reserved "where"
-                (cdoc, argDocs, cn, cty, _, _) <- indentedBlockS (constructor syn)
+                (cdoc, argDocs, cn, cty, _, _) <- pBlockS (constructor syn)
                 accData acc tyn [cn]
                 let rsyn = syn { syn_namespace = show (nsroot tyn) :
                                                     syn_namespace syn }
@@ -106,9 +107,8 @@ SimpleConstructorList ::=
   ;
 -}
 data_ :: SyntaxInfo -> IdrisParser PDecl
-data_ syn = do (doc, argDocs, acc, dataOpts) <- try (do
+data_ syn = do (doc, argDocs, acc, dataOpts) <- try (localTokenMode (const Ge) $ do
                     (doc, argDocs) <- option noDocs docComment
-                    pushIndent
                     acc <- optional accessibility
                     elim <- dataOpts []
                     co <- dataI
@@ -117,12 +117,11 @@ data_ syn = do (doc, argDocs, acc, dataOpts) <- try (do
                fc <- getFC
                tyn_in <- fnName
                (do try (lchar ':')
-                   popIndent
                    ty <- typeExpr (allowImp syn)
                    let tyn = expandNS syn tyn_in
                    option (PData doc argDocs syn fc dataOpts (PLaterdecl tyn ty)) (do
                      reserved "where"
-                     cons <- indentedBlock (constructor syn)
+                     cons <- pBlock (constructor syn)
                      accData acc tyn (map (\ (_, _, n, _, _, _) -> n) cons)
                      return $ PData doc argDocs syn fc dataOpts (PDatadecl tyn ty cons))) <|> (do
                     args <- many name
@@ -141,7 +140,6 @@ data_ syn = do (doc, argDocs, acc, dataOpts) <- try (do
                                              let fix3 = s ++ ": " ++ ss ++ " -> Type where\n  ..."
                                              fail $ fixErrorMsg "unexpected \"where\"" [fix1, fix2, fix3]
                       cons <- sepBy1 (simpleConstructor syn) (reservedOp "|")
-                      terminator
                       let conty = mkPApp fc (PRef fc tyn) (map (PRef fc) args)
                       cons' <- mapM (\ (doc, argDocs, x, cargs, cfc, fs) ->
                                    do let cty = bindArgs cargs conty
@@ -183,12 +181,11 @@ constructor syn
 -}
 simpleConstructor :: SyntaxInfo -> IdrisParser (Docstring, [(Name, Docstring)], Name, [PTerm], FC, [Name])
 simpleConstructor syn
-     = do doc <- option noDocs (try docComment)
+     = do doc <- option noDocs (try (localIndentation Ge docComment))
           cn_in <- fnName
           let cn = expandNS syn cn_in
           fc <- getFC
-          args <- many (do notEndApp
-                           simpleExpr syn)
+          args <- many (simpleExpr syn)
           return (fst doc, [], cn, args, fc, [])
        <?> "constructor"
 
@@ -198,7 +195,7 @@ DSL ::= 'dsl' FnName OpenBlock Overload'+ CloseBlock;
 dsl :: SyntaxInfo -> IdrisParser PDecl
 dsl syn = do reserved "dsl"
              n <- fnName
-             bs <- indentedBlock (overload syn)
+             bs <- pBlock (overload syn)
              let dsl = mkDSL bs (dsl_info syn)
              checkDSL dsl
              i <- get

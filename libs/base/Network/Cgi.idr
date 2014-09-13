@@ -53,8 +53,8 @@ getInfo = MkCGI (\s => return (s, s))
 
 abstract
 lift : IO a -> CGI a
-lift op = MkCGI (\st => do { x <- op
-                             return (x, st) } )
+lift op = MkCGI (\st => do   x <- op
+                             return (x, st)   )
 
 abstract
 output : String -> CGI ()

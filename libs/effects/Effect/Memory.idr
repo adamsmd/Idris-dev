@@ -43,7 +43,7 @@ do_malloc size with (fromInteger (cast size) == size)
   | True  = do ptr <- ioe_lift $ mkForeign (FFun "malloc" [FInt] FPtr) (fromInteger $ cast size)
                fail  <- ioe_lift $ nullPtr ptr
                if fail then ioe_fail "Cannot allocate memory"
-               else return ptr
+                 else return ptr
   | False = ioe_fail "The target architecture does not support adressing enough memory"
 
 private

@@ -229,7 +229,7 @@ CaseExpr ::=
 caseExpr :: SyntaxInfo -> IdrisParser PTerm
 caseExpr syn = do reserved "case"; fc <- getFC
                   scr <- expr syn; reserved "of";
-                  opts <- indentedBlock1 (caseOption syn)
+                  opts <- pBlock1 (caseOption syn)
                   return (PCase fc scr opts)
                <?> "case expression"
 
@@ -255,7 +255,7 @@ ProofExpr ::=
 -}
 proofExpr :: SyntaxInfo -> IdrisParser PTerm
 proofExpr syn = do reserved "proof"
-                   ts <- indentedBlock1 (tactic syn)
+                   ts <- pBlock1 (tactic syn)
                    return $ PProof ts
                 <?> "proof block"
 
@@ -268,7 +268,7 @@ TacticsExpr :=
 -}
 tacticsExpr :: SyntaxInfo -> IdrisParser PTerm
 tacticsExpr syn = do reserved "tactics"
-                     ts <- indentedBlock1 (tactic syn)
+                     ts <- pBlock1 (tactic syn)
                      return $ PTactics ts
                   <?> "tactics block"
 
@@ -301,8 +301,7 @@ simpleExpr syn =
         <|> do x <- try (lchar '?' *> name); return (PMetavar x)
         <|> do lchar '%'; fc <- getFC; reserved "instance"; return (PResolveTC fc)
         <|> do reserved "refl"; fc <- getFC;
-               tm <- option Placeholder (do lchar '{'; t <- expr syn; lchar '}';
-                                            return t)
+               tm <- option Placeholder (do lchar '{'; t <- expr syn; lchar '}'; return t)
                return (PRefl fc tm)
         <|> do reserved "elim_for"; fc <- getFC; t <- fnName; return (PRef fc (SN $ ElimN t))
         <|> proofExpr syn
@@ -514,7 +513,7 @@ app :: SyntaxInfo -> IdrisParser PTerm
 app syn = do f <- reserved "mkForeign"
              fc <- getFC
              fn <- arg syn
-             args <- many (do notEndApp; arg syn)
+             args <- many (arg syn)
              i <- get
              let ap = PApp fc (PRef fc (sUN "liftPrimIO"))
                        [pexp (PLam (sMN 0 "w")
@@ -535,7 +534,7 @@ app syn = do f <- reserved "mkForeign"
                <?> "matching application expression") <|> (do
               fc <- getFC
               i <- get
-              args <- many (do notEndApp; arg syn)
+              args <- many (arg syn)
               case args of
                 [] -> return f
                 _  -> return (dslify i (PApp fc f args)))
@@ -784,7 +783,7 @@ TypeSig' ::=
  -}
 let_ :: SyntaxInfo -> IdrisParser PTerm
 let_ syn = try (do reserved "let"
-                   ls <- indentedBlock (let_binding syn)
+                   ls <- pBlock (let_binding syn)
                    reserved "in";  sc <- expr syn
                    return (buildLets ls sc))
            <?> "let binding"
@@ -1018,7 +1017,7 @@ DoBlock ::=
 doBlock :: SyntaxInfo -> IdrisParser PTerm
 doBlock syn
     = do reserved "do"
-         ds <- indentedBlock (do_ syn)
+         ds <- pBlock (do_ syn)
          return (PDoBlock ds)
       <?> "do block"
 
@@ -1208,58 +1207,58 @@ TacticSeq ::=
 -}
 
 tactic :: SyntaxInfo -> IdrisParser PTactic
-tactic syn = do reserved "intro"; ns <- sepBy (indentPropHolds gtProp *> name) (lchar ',')
+tactic syn = do reserved "intro"; ns <- sepBy name (lchar ',')
                 return $ Intro ns
           <|> do reserved "intros"; return Intros
-          <|> try (do reserved "refine"; n <- (indentPropHolds gtProp *> fnName)
+          <|> try (do reserved "refine"; n <- fnName
                       imps <- some imp
                       return $ Refine n imps)
-          <|> do reserved "refine"; n <- (indentPropHolds gtProp *> fnName)
+          <|> do reserved "refine"; n <- fnName
                  i <- get
                  return $ Refine n []
-          <|> do reserved "mrefine"; n <- (indentPropHolds gtProp *> fnName)
+          <|> do reserved "mrefine"; n <- fnName
                  i <- get
                  return $ MatchRefine n
-          <|> do reserved "rewrite"; t <- (indentPropHolds gtProp *> expr syn);
+          <|> do reserved "rewrite"; t <- expr syn
                  i <- get
                  return $ Rewrite (desugar syn i t)
-          <|> do reserved "case"; t <- (indentPropHolds gtProp *> expr syn);
+          <|> do reserved "case"; t <- expr syn
                  i <- get
                  return $ CaseTac (desugar syn i t)
-          <|> do reserved "induction"; t <- (indentPropHolds gtProp *> expr syn);
+          <|> do reserved "induction"; t <- expr syn
                  i <- get
                  return $ Induction (desugar syn i t)
-          <|> do reserved "equiv"; t <- (indentPropHolds gtProp *> expr syn);
+          <|> do reserved "equiv"; t <- expr syn
                  i <- get
                  return $ Equiv (desugar syn i t)
-          <|> try (do reserved "let"; n <- (indentPropHolds gtProp *> name); (indentPropHolds gtProp *> lchar ':');
-                      ty <- (indentPropHolds gtProp *> expr' syn); (indentPropHolds gtProp *> lchar '='); t <- (indentPropHolds gtProp *> expr syn);
+          <|> try (do reserved "let"; n <- name; lchar ':'
+                      ty <- expr' syn; lchar '='; t <- expr syn
                       i <- get
                       return $ LetTacTy n (desugar syn i ty) (desugar syn i t))
-          <|> try (do reserved "let"; n <- (indentPropHolds gtProp *> name); (indentPropHolds gtProp *> lchar '=');
-                      t <- (indentPropHolds gtProp *> expr syn);
+          <|> try (do reserved "let"; n <- name; lchar '='
+                      t <- expr syn
                       i <- get
                       return $ LetTac n (desugar syn i t))
-          <|> do reserved "focus"; n <- (indentPropHolds gtProp *> name)
+          <|> do reserved "focus"; n <- name
                  return $ Focus n
-          <|> do reserved "exact"; t <- (indentPropHolds gtProp *> expr syn);
+          <|> do reserved "exact"; t <- expr syn
                  i <- get
                  return $ Exact (desugar syn i t)
-          <|> do reserved "applyTactic"; t <- (indentPropHolds gtProp *> expr syn);
+          <|> do reserved "applyTactic"; t <- expr syn
                  i <- get
                  return $ ApplyTactic (desugar syn i t)
-          <|> do reserved "byReflection"; t <- (indentPropHolds gtProp *> expr syn);
+          <|> do reserved "byReflection"; t <- expr syn
                  i <- get
                  return $ ByReflection (desugar syn i t)
-          <|> do reserved "reflect"; t <- (indentPropHolds gtProp *> expr syn);
+          <|> do reserved "reflect"; t <- expr syn
                  i <- get
                  return $ Reflect (desugar syn i t)
-          <|> do reserved "fill"; t <- (indentPropHolds gtProp *> expr syn);
+          <|> do reserved "fill"; t <- expr syn
                  i <- get
                  return $ Fill (desugar syn i t)
-          <|> do reserved "try"; t <- (indentPropHolds gtProp *> tactic syn);
+          <|> do reserved "try"; t <- tactic syn
                  lchar '|';
-                 t1 <- (indentPropHolds gtProp *> tactic syn)
+                 t1 <- tactic syn
                  return $ Try t t1
           <|> do lchar '{'
                  t <- tactic syn;
@@ -1288,11 +1287,11 @@ tactic syn = do reserved "intro"; ns <- sepBy (indentPropHolds gtProp *> name) (
           <|> do lchar ':';
                  (    (do reserved "q"; return Abandon)
                   <|> (do (reserved "e" <|> reserved "eval");
-                          t <- (indentPropHolds gtProp *> expr syn);
+                          t <- expr syn
                           i <- get
                           return $ TEval (desugar syn i t))
                   <|> (do (reserved "t" <|> reserved "type");
-                          t <- (indentPropHolds gtProp *> expr syn);
+                          t <- expr syn
                           i <- get
                           return $ TCheck (desugar syn i t))
                   <|> try (do reserved "doc"
@@ -1307,7 +1306,7 @@ tactic syn = do reserved "intro"; ns <- sepBy (indentPropHolds gtProp *> name) (
                               return (TDocStr (Left n)))
                   <|> try (do reserved "search"
                               whiteSpace
-                              t <- (indentPropHolds gtProp *> expr syn);
+                              t <- expr syn
                               i <- get
                               return $ TSearch (desugar syn i t))
                   <?> "prover command")

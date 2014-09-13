@@ -141,7 +141,7 @@ socket sf st pn = do
   socket_res <- mkForeign (FFun "socket" [FInt, FInt, FInt] FInt) (toCode sf) (toCode st) pn
   if socket_res == -1 then -- error
     map Left getErrno
-  else 
+   else 
     return $ Right (MkSocket socket_res sf st pn)
 
 
@@ -161,7 +161,7 @@ bind sock addr port = do
                            (descriptor sock) (toCode $ family sock) (toCode $ socketType sock) (saString addr) port)
   if bind_res == (-1) then -- error
     getErrno
-  else return 0 -- Success
+   else return 0 -- Success
 
 -- Connects to a given address and port.
 -- Returns 0 on success, and an error number on error.
@@ -171,7 +171,7 @@ connect sock addr port = do
                            (descriptor sock) (toCode $ family sock) (toCode $ socketType sock) (show addr) port)
   if conn_res == (-1) then
     getErrno
-  else return 0
+   else return 0
 
 -- Listens on a bound socket.
 listen : Socket -> IO Int
@@ -179,7 +179,7 @@ listen sock = do
   listen_res <- mkForeign (FFun "listen" [FInt, FInt] FInt) (descriptor sock) BACKLOG
   if listen_res == (-1) then
     getErrno
-  else return 0
+   else return 0
 
 -- Parses a textual representation of an IPv4 address into a SocketAddress
 parseIPv4 : String -> SocketAddress
@@ -215,7 +215,7 @@ accept sock = do
   accept_res <- mkForeign (FFun "idrnet_accept" [FInt, FPtr] FInt) (descriptor sock) sockaddr_ptr
   if accept_res == (-1) then
     map Left getErrno
-  else do
+   else do
     let (MkSocket _ fam ty p_num) = sock
     sockaddr <- getSockAddr (SAPtr sockaddr_ptr)
     sockaddr_free (SAPtr sockaddr_ptr)
@@ -226,7 +226,7 @@ send sock dat = do
   send_res <- mkForeign (FFun "idrnet_send" [FInt, FString] FInt) (descriptor sock) dat
   if send_res == (-1) then
     map Left getErrno
-  else
+   else
     return $ Right send_res
 
 
@@ -246,7 +246,7 @@ recv sock len = do
     errno <- getErrno
     freeRecvStruct (RSPtr recv_struct_ptr)
     return $ Left errno
-  else 
+   else 
     if recv_res == 0 then do
        freeRecvStruct (RSPtr recv_struct_ptr)
        return $ Left 0
@@ -262,7 +262,7 @@ sendBuf sock (BPtr ptr) len = do
   send_res <- mkForeign (FFun "idrnet_send_buf" [FInt, FPtr, FInt] FInt) (descriptor sock) ptr len
   if send_res == (-1) then
     map Left getErrno
-  else 
+   else 
     return $ Right send_res
 
 recvBuf : Socket -> BufPtr -> ByteLength -> IO (Either SocketError ByteLength)
@@ -270,7 +270,7 @@ recvBuf sock (BPtr ptr) len = do
   recv_res <- mkForeign (FFun "idrnet_recv_buf" [FInt, FPtr, FInt] FInt) (descriptor sock) ptr len
   if (recv_res == (-1)) then
     map Left getErrno
-  else
+   else
     return $ Right recv_res
 
 sendTo : Socket -> SocketAddress -> Port -> String -> IO (Either SocketError ByteLength)
@@ -279,7 +279,7 @@ sendTo sock addr p dat = do
                             (descriptor sock) dat (show addr) p (toCode $ family sock)
   if sendto_res == (-1) then
     map Left getErrno
-  else
+   else
     return $ Right sendto_res
 
 
@@ -289,7 +289,7 @@ sendToBuf sock addr p (BPtr dat) len = do
                             (descriptor sock) dat len (show addr) p (toCode $ family sock)
   if sendto_res == (-1) then
     map Left getErrno
-  else
+   else
     return $ Right sendto_res
 
 
@@ -315,12 +315,12 @@ recvFrom sock bl = do
   let recv_ptr' = RFPtr recv_ptr
   if !(nullPtr recv_ptr) then -- ! notation = monadic bind shortcut, not "not"
     map Left getErrno
-  else do
+   else do
     result <- mkForeign (FFun "idrnet_get_recvfrom_res" [FPtr] FInt) recv_ptr
     if result == -1 then do
       freeRecvfromStruct recv_ptr'
       map Left getErrno
-    else do
+     else do
       payload <- foreignGetRecvfromPayload recv_ptr'
       port <- foreignGetRecvfromPort recv_ptr'
       addr <- foreignGetRecvfromAddr recv_ptr'
@@ -334,12 +334,12 @@ recvFromBuf sock (BPtr ptr) bl = do
   let recv_ptr' = RFPtr recv_ptr
   if !(nullPtr recv_ptr) then -- ! notation = monadic bind shortcut, not "not"
     map Left getErrno
-  else do
+   else do
     result <- mkForeign (FFun "idrnet_get_recvfrom_res" [FPtr] FInt) recv_ptr
     if result == -1 then do
       freeRecvfromStruct recv_ptr'
       map Left getErrno
-    else do
+     else do
       port <- foreignGetRecvfromPort recv_ptr'
       addr <- foreignGetRecvfromAddr recv_ptr'
       freeRecvfromStruct recv_ptr'

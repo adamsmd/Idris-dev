@@ -10,6 +10,7 @@ import Prelude hiding (pi)
 
 import Text.Trifecta.Delta
 import Text.Trifecta hiding (span, stringLiteral, charLiteral, natural, symbol, char, string, whiteSpace)
+import Text.Trifecta.Indentation
 import Text.Parser.LookAhead
 import Text.Parser.Expression
 import qualified Text.Parser.Token as Tok
@@ -94,7 +95,6 @@ moduleHeader :: IdrisParser [String]
 moduleHeader =     try (do noDocCommentHere "Modules cannot have documentation comments"
                            reserved "module"
                            i <- identifier
-                           option ';' (lchar ';')
                            return (moduleName i))
                <|> try (do lchar '%'; reserved "unqualified"
                            return [])
@@ -114,7 +114,6 @@ import_ = do fc <- getFC
              reserved "import"
              id <- identifier
              newName <- optional (reserved "as" *> identifier)
-             option ';' (lchar ';')
              return (toPath id, toPath <$> newName, fc)
           <?> "import statement"
   where toPath = foldl1' (</>) . Spl.splitOn "."
@@ -127,10 +126,10 @@ import_ = do fc <- getFC
  -}
 prog :: SyntaxInfo -> IdrisParser [PDecl]
 prog syn = do whiteSpace
-              decls <- many (decl syn)
+              decls <- liftM concat $ many (absoluteIndentation $ semiSepNonNull $ decl syn)
               let c = (concat decls)
               case maxline syn of
-                   Nothing -> do notOpenBraces; eof
+                   Nothing -> localTokenMode (const Text.Trifecta.Indentation.Any) eof
                    _ -> return ()
               ist <- get
               fc <- getFC
@@ -165,8 +164,7 @@ decl syn = do fc <- getFC
                                 Just l -> if fst (fc_end fc) > l
                                              then mut_nesting syn /= 0
                                              else True
-              if continue then do notEndBlock
-                                  declBody
+              if continue then declBody
                           else fail "End of readable input"
   where declBody :: IdrisParser [PDecl]
         declBody =     declBody'
@@ -251,8 +249,7 @@ SyntaxSym ::=   '[' Name_t ']'
 -}
 syntaxRule :: SyntaxInfo -> IdrisParser Syntax
 syntaxRule syn
-    = do sty <- try (do
-            pushIndent
+    = do sty <- try (localTokenMode (const Ge) $ do
             sty <- option AnySyntax (do reserved "term"; return TermSyntax
                                   <|> do reserved "pattern"; return PatternSyntax)
             reserved "syntax"
@@ -264,7 +261,6 @@ syntaxRule syn
             $ unexpected "repeated variable in syntax rule"
          lchar '='
          tm <- typeExpr (allowImp syn)
-         terminator
          return (Rule (mkSimple syms) tm sty)
   where
     isExpr (Expr _) = True
@@ -310,8 +306,7 @@ syntaxSym =    try (do lchar '['; n <- name; lchar ']'
 @
 -}
 fnDecl :: SyntaxInfo -> IdrisParser [PDecl]
-fnDecl syn = try (do notEndBlock
-                     d <- fnDecl' syn
+fnDecl syn = try (do d <- fnDecl' syn
                      i <- get
                      let d' = fmap (desugar syn i) d
                      return [d']) <?> "function declaration"
@@ -329,8 +324,7 @@ fnDecl syn = try (do notEndBlock
 -}
 fnDecl' :: SyntaxInfo -> IdrisParser PDecl
 fnDecl' syn = checkFixity $
-              do (doc, fc, opts', n, acc) <- try (do
-                        pushIndent
+              do (doc, fc, opts', n, acc) <- try (localTokenMode (const Ge) $ do
                         ist <- get
                         doc <- option noDocs docComment
                         ist <- get
@@ -343,10 +337,9 @@ fnDecl' syn = checkFixity $
                         n_in <- fnName
                         let n = expandNS syn n_in
                         fc <- getFC
-                        lchar ':'
+                        localTokenMode (const Gt) $ lchar ':'
                         return (doc, fc, opts', n, acc))
                  ty <- typeExpr (allowImp syn)
-                 terminator
                  addAcc n acc
                  return (PTy (fst doc) (snd doc) syn fc opts' n ty)
             <|> postulate syn
@@ -435,7 +428,6 @@ Postulate ::=
 -}
 postulate :: SyntaxInfo -> IdrisParser PDecl
 postulate syn = do doc <- try $ do doc <- option noDocs docComment
-                                   pushIndent
                                    reserved "postulate"
                                    return doc
                    ist <- get
@@ -450,7 +442,6 @@ postulate syn = do doc <- try $ do doc <- option noDocs docComment
                    lchar ':'
                    ty <- typeExpr (allowImp syn)
                    fc <- getFC
-                   terminator
                    addAcc n acc
                    return (PPostulate (fst doc) syn fc opts' n ty)
                  <?> "postulate"
@@ -466,10 +457,8 @@ Using ::=
 using_ :: SyntaxInfo -> IdrisParser [PDecl]
 using_ syn =
     do reserved "using"; lchar '('; ns <- usingDeclList syn; lchar ')'
-       openBlock
        let uvars = using syn
-       ds <- many (decl (syn { using = uvars ++ ns }))
-       closeBlock
+       ds <- pBlock (decl (syn { using = uvars ++ ns }))
        return (concat ds)
     <?> "using declaration"
 
@@ -484,10 +473,8 @@ Params ::=
 params :: SyntaxInfo -> IdrisParser [PDecl]
 params syn =
     do reserved "parameters"; lchar '('; ns <- typeDeclList syn; lchar ')'
-       openBlock
        let pvars = syn_params syn
-       ds <- many (decl syn { syn_params = pvars ++ ns })
-       closeBlock
+       ds <- pBlock (decl syn { syn_params = pvars ++ ns })
        fc <- getFC
        return [PParams fc ns (concat ds)]
     <?> "parameters declaration"
@@ -503,10 +490,8 @@ Mutual ::=
 mutual :: SyntaxInfo -> IdrisParser [PDecl]
 mutual syn =
     do reserved "mutual"
-       openBlock
        let pvars = syn_params syn
-       ds <- many (decl (syn { mut_nesting = mut_nesting syn + 1 } ))
-       closeBlock
+       ds <- pBlock (decl (syn { mut_nesting = mut_nesting syn + 1 } ))
        fc <- getFC
        return [PMutual fc (concat ds)]
     <?> "mutual block"
@@ -522,9 +507,7 @@ Namespace ::=
 namespace :: SyntaxInfo -> IdrisParser [PDecl]
 namespace syn =
     do reserved "namespace"; n <- identifier;
-       openBlock
-       ds <- some (decl syn { syn_namespace = n : syn_namespace syn })
-       closeBlock
+       ds <- pBlock1 (decl syn { syn_namespace = n : syn_namespace syn })
        return [PNamespace n (concat ds)]
      <?> "namespace declaration"
 
@@ -536,9 +519,7 @@ namespace syn =
 -}
 instanceBlock :: SyntaxInfo -> IdrisParser [PDecl]
 instanceBlock syn = do reserved "where"
-                       openBlock
-                       ds <- many (fnDecl syn)
-                       closeBlock
+                       ds <- pBlock (fnDecl syn)
                        return (concat ds)
                     <?> "instance block"
 
@@ -559,9 +540,7 @@ ClassBlock ::=
 -}
 classBlock :: SyntaxInfo -> IdrisParser [PDecl]
 classBlock syn = do reserved "where"
-                    openBlock
-                    ds <- many ((notEndBlock >> instance_ syn) <|> fnDecl syn)
-                    closeBlock
+                    ds <- pBlock (instance_ syn <|> fnDecl syn)
                     return (concat ds)
                  <?> "class block"
 
@@ -581,11 +560,12 @@ Class ::=
 @
 -}
 class_ :: SyntaxInfo -> IdrisParser [PDecl]
-class_ syn = do (doc, acc) <- try (do
+class_ syn = do (doc, acc) <- try (localTokenMode (const Ge) $ do
                   doc <- option noDocs docComment
                   acc <- optional accessibility
+                  reserved "class"
                   return (doc, acc))
-                reserved "class"; fc <- getFC; cons <- constraintList syn; n_in <- fnName
+                fc <- getFC; cons <- constraintList syn; n_in <- fnName
                 let n = expandNS syn n_in
                 cs <- many carg
                 ds <- option [] (classBlock syn)
@@ -703,7 +683,6 @@ caf syn = do reserved "let"
              n_in <- fnName; let n = expandNS syn n_in
              lchar '='
              t <- expr syn
-             terminator
              fc <- getFC
              return (PCAF fc n t)
            <?> "constant applicative form declaration"
@@ -780,7 +759,7 @@ WhereOrTerminator ::= WhereBlock | Terminator;
 -}
 clause :: SyntaxInfo -> IdrisParser PClause
 clause syn
-         = do wargs <- try (do pushIndent; some (wExpr syn))
+         = do wargs <- try (some (wExpr syn))
               fc <- getFC
               ist <- get
               n <- case lastParse ist of
@@ -789,22 +768,14 @@ clause syn
               (do r <- rhs syn n
                   let ctxt = tt_ctxt ist
                   let wsyn = syn { syn_namespace = [] }
-                  (wheres, nmap) <- choice [do x <- whereBlock n wsyn
-                                               popIndent
-                                               return x,
-                                            do terminator
-                                               return ([], [])]
+                  (wheres, nmap) <- option ([], []) (whereBlock n wsyn)
                   return $ PClauseR fc wargs r wheres) <|> (do
-                  popIndent
                   reserved "with"
                   wval <- simpleExpr syn
-                  openBlock
-                  ds <- some $ fnDecl syn
+                  ds <- pBlock1 $ fnDecl syn
                   let withs = concat ds
-                  closeBlock
                   return $ PWithR fc wargs wval withs)
-       <|> do ty <- try (do pushIndent
-                            ty <- simpleExpr syn
+       <|> do ty <- try (do ty <- simpleExpr syn
                             symbol "<=="
                             return ty)
               fc <- getFC
@@ -813,11 +784,7 @@ clause syn
               ist <- get
               let ctxt = tt_ctxt ist
               let wsyn = syn { syn_namespace = [] }
-              (wheres, nmap) <- choice [do x <- whereBlock n wsyn
-                                           popIndent
-                                           return x,
-                                        do terminator
-                                           return ([], [])]
+              (wheres, nmap) <- option ([], []) (whereBlock n wsyn)
               let capp = PLet (sMN 0 "match")
                               ty
                               (PMatchApp fc n)
@@ -826,7 +793,6 @@ clause syn
               put (ist { lastParse = Just n })
               return $ PClause fc n capp [] r wheres
        <|> do (l, op) <- try (do
-                pushIndent
                 l <- argExpr syn
                 op <- operator
                 when (op == "=" || op == "?=" ) $
@@ -838,28 +804,20 @@ clause syn
               wargs <- many (wExpr syn)
               (do rs <- rhs syn n
                   let wsyn = syn { syn_namespace = [] }
-                  (wheres, nmap) <- choice [do x <- whereBlock n wsyn
-                                               popIndent
-                                               return x,
-                                            do terminator
-                                               return ([], [])]
+                  (wheres, nmap) <- option ([], []) (whereBlock n wsyn)
                   ist <- get
                   let capp = PApp fc (PRef fc n) [pexp l, pexp r]
                   put (ist { lastParse = Just n })
                   return $ PClause fc n capp wargs rs wheres) <|> (do
-                   popIndent
                    reserved "with"
                    wval <- bracketed syn
-                   openBlock
-                   ds <- some $ fnDecl syn
-                   closeBlock
+                   ds <- pBlock1 $ fnDecl syn
                    ist <- get
                    let capp = PApp fc (PRef fc n) [pexp l, pexp r]
                    let withs = map (fillLHSD n capp wargs) $ concat ds
                    put (ist { lastParse = Just n })
                    return $ PWith fc n capp wargs wval withs)
-       <|> do pushIndent
-              n_in <- fnName; let n = expandNS syn n_in
+       <|> do n_in <- fnName; let n = expandNS syn n_in
               cargs <- many (constraintArg syn)
               fc <- getFC
               args <- many (try (implicitArg (syn { inPattern = True } ))
@@ -871,11 +829,7 @@ clause syn
                   ist <- get
                   let ctxt = tt_ctxt ist
                   let wsyn = syn { syn_namespace = [] }
-                  (wheres, nmap) <- choice [do x <- whereBlock n wsyn
-                                               popIndent
-                                               return x,
-                                            do terminator
-                                               return ([], [])]
+                  (wheres, nmap) <- option ([], []) (whereBlock n wsyn)
                   ist <- get
                   put (ist { lastParse = Just n })
                   return $ PClause fc n capp wargs r wheres) <|> (do
@@ -883,11 +837,8 @@ clause syn
                    ist <- get
                    put (ist { lastParse = Just n })
                    wval <- bracketed syn
-                   openBlock
-                   ds <- some $ fnDecl syn
+                   ds <- pBlock1 $ fnDecl syn
                    let withs = map (fillLHSD n capp wargs) $ concat ds
-                   closeBlock
-                   popIndent
                    return $ PWith fc n capp wargs wval withs)
       <?> "function clause"
   where
@@ -923,7 +874,7 @@ WhereBlock ::= 'where' OpenBlock Decl+ CloseBlock;
 whereBlock :: Name -> SyntaxInfo -> IdrisParser ([PDecl], [(Name, Name)])
 whereBlock n syn
     = do reserved "where"
-         ds <- indentedBlock1 (decl syn)
+         ds <- pBlock1 (decl syn)
          let dns = concatMap (concatMap declared) ds
          return (concat ds, map (\x -> (x, decoration syn x)) dns)
       <?> "where block"
@@ -1099,28 +1050,28 @@ transform syn = do try (lchar '%' *> reserved "transform")
 {- * Loading and parsing -}
 {- | Parses an expression from input -}
 parseExpr :: IState -> String -> Result PTerm
-parseExpr st = runparser (fullExpr defaultSyntax) st "(input)"
+parseExpr st = runparserLax (fullExpr defaultSyntax) st "(input)"
 
 {- | Parses a constant form input -}
 parseConst :: IState -> String -> Result Const
-parseConst st = runparser constant st "(input)"
+parseConst st = runparserLax constant st "(input)"
 
 {- | Parses a tactic from input -}
 parseTactic :: IState -> String -> Result PTactic
-parseTactic st = runparser (fullTactic defaultSyntax) st "(input)"
+parseTactic st = runparserLax (fullTactic defaultSyntax) st "(input)"
 
 -- | Parse module header and imports
 parseImports :: FilePath -> String -> Idris ([String], [(String, Maybe String, FC)], Maybe Delta)
 parseImports fname input
     = do i <- getIState
-         case parseString (runInnerParser (evalStateT imports i)) (Directed (UTF8.fromString fname) 0 0 0 0) input of
+         case runparserStrict imports i fname input of
               Failure err    -> fail (show err)
               Success (x, i) -> do putIState i
                                    return x
   where imports :: IdrisParser (([String], [(String, Maybe String, FC)], Maybe Delta), IState)
         imports = do whiteSpace
-                     mname <- moduleHeader
-                     ps    <- many import_
+                     mname <- absoluteIndentation moduleHeader
+                     ps    <- liftM concat $ many (absoluteIndentation (semiSepNonNull import_))
                      mrk   <- mark
                      isEof <- lookAheadMatches eof
                      let mrk' = if isEof
@@ -1149,7 +1100,7 @@ parseProg :: SyntaxInfo -> FilePath -> String -> Maybe Delta ->
              Idris [PDecl]
 parseProg syn fname input mrk
     = do i <- getIState
-         case runparser mainProg i fname input of
+         case runparserStrict mainProg i fname input of
             Failure doc     -> do -- FIXME: Get error location from trifecta
                                   -- this can't be the solution!
                                   let (fc, msg) = findFC doc

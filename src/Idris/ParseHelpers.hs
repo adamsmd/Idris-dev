@@ -4,7 +4,8 @@ module Idris.ParseHelpers where
 import Prelude hiding (pi)
 
 import Text.Trifecta.Delta
-import Text.Trifecta hiding (span, stringLiteral, charLiteral, natural, symbol, char, string, whiteSpace)
+import Text.Trifecta hiding (span, stringLiteral, charLiteral, natural, symbol, char, string, whiteSpace, semiSep)
+import Text.Trifecta.Indentation as Ind
 import Text.Parser.LookAhead
 import Text.Parser.Expression
 import qualified Text.Parser.Token as Tok
@@ -42,28 +43,32 @@ import Debug.Trace
 -- | Idris parser with state used during parsing
 type IdrisParser = StateT IState IdrisInnerParser
 
-newtype IdrisInnerParser a = IdrisInnerParser { runInnerParser :: Parser a }
-  deriving (Monad, Functor, MonadPlus, Applicative, Alternative, CharParsing, LookAheadParsing, DeltaParsing, MarkParsing Delta, Monoid, TokenParsing)
+newtype IdrisInnerParser a = IdrisInnerParser { runInnerParser :: IndentationParserT Char Parser a }
+  deriving (Monad, Functor, MonadPlus, Applicative, Alternative, CharParsing, LookAheadParsing, DeltaParsing, MarkParsing Delta, TokenParsing)
 
 deriving instance Parsing IdrisInnerParser
+deriving instance IndentationParsing IdrisInnerParser
 
 instance TokenParsing IdrisParser where
-  someSpace = many (simpleWhiteSpace <|> singleLineComment <|> multiLineComment) *> pure ()
+  someSpace = ignoreAbsoluteIndentation (localTokenMode (const Ind.Any) (many (simpleWhiteSpace <|> singleLineComment <|> multiLineComment))) *> pure ()
   token p = do s <- get
                (FC fn (sl, sc) _) <- getFC --TODO: Update after fixing getFC
                r <- p
                (FC fn _ (el, ec)) <- getFC
-               whiteSpace
+               ignoreAbsoluteIndentation (localTokenMode (const Ind.Any) whiteSpace)
                put (s { lastTokenSpan = Just (FC fn (sl, sc) (el, ec)) })
                return r
 -- | Generalized monadic parsing constraint type
-type MonadicParsing m = (DeltaParsing m, LookAheadParsing m, TokenParsing m, Monad m)
+type MonadicParsing m = (DeltaParsing m, LookAheadParsing m, TokenParsing m, Monad m, IndentationParsing m)
 
 -- | Helper to run Idris inner parser based stateT parsers
-runparser :: StateT st IdrisInnerParser res -> st -> String -> String -> Result res
-runparser p i inputname =
-  parseString (runInnerParser (evalStateT p i))
+runparser :: Indentation -> Indentation -> Bool -> IndentationRel -> StateT st IdrisInnerParser res -> st -> String -> String -> Result res
+runparser lo hi mode rel p i inputname =
+  parseString (evalIndentationParserT (runInnerParser (evalStateT p i)) (mkIndentationState lo hi mode rel))
               (Directed (UTF8.fromString inputname) 0 0 0 0)
+
+runparserStrict = runparser 1 1 False Gt
+runparserLax = runparser 1 infIndentation False Ind.Any
 
 noDocCommentHere :: String -> IdrisParser ()
 noDocCommentHere msg =
@@ -154,17 +159,16 @@ multiLineComment =     try (string "{-" *> (string "-}") *> pure ())
 @
  -}
 docComment :: IdrisParser (Docstring, [(Name, Docstring)])
-docComment = do dc <- pushIndent *> docCommentLine
-                rest <- many (indented docCommentLine)
-                args <- many $ do (name, first) <- indented argDocCommentLine
-                                  rest <- many (indented docCommentLine)
+docComment = do dcs <- some docCommentLine
+                args <- many $ do (name, first) <- argDocCommentLine
+                                  rest <- many docCommentLine
                                   return (name, concat (intersperse "\n" (first:rest)))
-                popIndent
-                return (parseDocstring $ T.pack (concat (intersperse "\n" (dc:rest))),
+                return (parseDocstring $ T.pack (concat (intersperse "\n" dcs)),
                         map (\(n, d) -> (n, parseDocstring (T.pack d))) args)
 
   where docCommentLine :: MonadicParsing m => m String
-        docCommentLine = try (do string "|||"
+        docCommentLine = try (localAbsoluteIndentation $
+                              do string "|||"
                                  many (satisfy (==' '))
                                  contents <- option "" (do first <- satisfy (\c -> not (isEol c || c == '@'))
                                                            res <- many (satisfy (not . isEol))
@@ -173,7 +177,8 @@ docComment = do dc <- pushIndent *> docCommentLine
                                  return contents)-- ++ concat rest))
                         <?> ""
 
-        argDocCommentLine = do string "|||"
+        argDocCommentLine = localAbsoluteIndentation $
+                            do string "|||"
                                many (satisfy isSpace)
                                char '@'
                                many (satisfy isSpace)
@@ -191,7 +196,7 @@ whiteSpace = Tok.whiteSpace
 
 -- | Parses a string literal
 stringLiteral :: MonadicParsing m => m String
-stringLiteral = Tok.stringLiteral
+stringLiteral = Tok.stringLiteral -- TODO: handle string gaps
 
 -- | Parses a char literal
 charLiteral :: MonadicParsing m => m Char
@@ -352,172 +357,63 @@ bindList b ((n, t):bs) sc = b n t (bindList b bs sc)
 
 {- * Layout helpers -}
 
--- | Push indentation to stack
-pushIndent :: IdrisParser ()
-pushIndent = do pos <- position
-                ist <- get
-                put (ist { indent_stack = (fromIntegral (column pos) + 1) : indent_stack ist })
+-- A close brace that may appear at the current indentation
+pClose :: (MonadicParsing m) => m Char
+pClose = localTokenMode (const Ge) (lchar '}')
 
--- | Pops indentation from stack
-popIndent :: IdrisParser ()
-popIndent = do ist <- get
-               let (x : xs) = indent_stack ist
-               put (ist { indent_stack = xs })
+{- Parses zero or more 'p' separated by one or more ';' and preceeded
+or followed by zero or more ';'.  Not nullable so we can safely use it
+in 'many' and 'some'.
 
+The state machine for this is as follows:
 
--- | Gets current indentation
-indent :: IdrisParser Int
-indent = liftM ((+1) . fromIntegral . column) position
+    +-------------+
+    |             |
+    v             |
+--> go -- ';' --> go' -+-->
+    |             ^    |
+    |             |    |
+    +-> p - ';' --+    |
+        |              |
+        +--------------+
+-}
 
--- | Gets last indentation
-lastIndent :: IdrisParser Int
-lastIndent = do ist <- get
-                case indent_stack ist of
-                  (x : xs) -> return x
-                  _        -> return 1
+semiSepNonNull p = liftM reverse $ go [] where
+  go' xs = option xs (go xs)
+  go xs = (lchar ';' >> go' xs)
+       <|> (p >>= \x -> option (x:xs) (lchar ';' >> go' (x : xs)))
 
--- | Applies parser in an indented position
-indented :: IdrisParser a -> IdrisParser a
-indented p = notEndBlock *> p <* keepTerminator
+-- Fails if a parser returns an empty list
+notNull m = m >>= \x -> case x of [] -> mzero; _ -> return x
 
--- | Applies parser to get a block (which has possibly indented statements)
-indentedBlock :: IdrisParser a -> IdrisParser [a]
-indentedBlock p = do openBlock
-                     pushIndent
-                     res <- many (indented p)
-                     popIndent
-                     closeBlock
-                     return res
+-- Like semiSepNonNull but is nullable
+semiSep  p = semiSepNonNull p <|> return []
 
--- | Applies parser to get a block with at least one statement (which has possibly indented statements)
-indentedBlock1 :: IdrisParser a -> IdrisParser [a]
-indentedBlock1 p = do openBlock
-                      pushIndent
-                      res <- some (indented p)
-                      popIndent
-                      closeBlock
-                      return res
+-- Like semiSepNonNull but requires at least one 'p' be parsed
+semiSep1 p = notNull (semiSepNonNull p)
 
--- | Applies parser to get a block with exactly one (possibly indented) statement
-indentedBlockS :: IdrisParser a -> IdrisParser a
-indentedBlockS p = do openBlock
-                      pushIndent
-                      res <- indented p
-                      popIndent
-                      closeBlock
-                      return res
+-- An indentation sensitive block of zero or more 'p'
+pBlock p =
+  between (lchar '{') (pClose) (localIndentation (Ind.Const 0) (semiSep p))
+  <|> (liftM concat $ localIndentation Gt $ many $ absoluteIndentation $ semiSepNonNull p)
 
+-- An indentation sensitive block of one or more 'p'
+pBlock1 p = notNull (pBlock p)
+
+-- An indentation sensitive block of exactly one 'p'
+-- TODO: is the use of optionTerm a bug?
+pBlockS p = between (lchar '{') (pClose) (localIndentation (Ind.Const 0) (optionTerm p))
+  <|> (localIndentation Gt $ absoluteIndentation (optionTerm p))
+
+-- 'p' followed by an optional ';'
+optionTerm p = do x <- p
+                  option ';' (lchar ';')
+                  return x
 
 -- | Checks if the following character matches provided parser
 lookAheadMatches :: MonadicParsing m => m a -> m Bool
 lookAheadMatches p = do match <- lookAhead (optional p)
                         return $ isJust match
-
--- | Parses a start of block
-openBlock :: IdrisParser ()
-openBlock =     do lchar '{'
-                   ist <- get
-                   put (ist { brace_stack = Nothing : brace_stack ist })
-            <|> do ist <- get
-                   lvl' <- indent
-                    -- if we're not indented further, it's an empty block, so
-                    -- increment lvl to ensure we get to the end
-                   let lvl = case brace_stack ist of
-                                   Just lvl_old : _ ->
-                                       if lvl' <= lvl_old then lvl_old+1
-                                                          else lvl'
-                                   [] -> if lvl' == 1 then 2 else lvl'
-                                   _ -> lvl'
-                   put (ist { brace_stack = Just lvl : brace_stack ist })
-            <?> "start of block"
-
--- | Parses an end of block
-closeBlock :: IdrisParser ()
-closeBlock = do ist <- get
-                bs <- case brace_stack ist of
-                        []  -> eof >> return []
-                        Nothing : xs -> lchar '}' >> return xs <?> "end of block"
-                        Just lvl : xs -> (do i   <- indent
-                                             isParen <- lookAheadMatches (char ')')
-                                             isIn <- lookAheadMatches (reserved "in")
-                                             if i >= lvl && not (isParen || isIn)
-                                                then fail "not end of block"
-                                                else return xs)
-                                          <|> (do notOpenBraces
-                                                  eof
-                                                  return [])
-                put (ist { brace_stack = bs })
-
--- | Parses a terminator
-terminator :: IdrisParser ()
-terminator =     do lchar ';'; popIndent
-             <|> do c <- indent; l <- lastIndent
-                    if c <= l then popIndent else fail "not a terminator"
-             <|> do isParen <- lookAheadMatches (oneOf ")}")
-                    if isParen then popIndent else fail "not a terminator"
-             <|> lookAhead eof
-
--- | Parses and keeps a terminator
-keepTerminator :: IdrisParser ()
-keepTerminator =  do lchar ';'; return ()
-              <|> do c <- indent; l <- lastIndent
-                     unless (c <= l) $ fail "not a terminator"
-              <|> do isParen <- lookAheadMatches (oneOf ")}|")
-                     isIn <- lookAheadMatches (reserved "in")
-                     unless (isIn || isParen) $ fail "not a terminator"
-              <|> lookAhead eof
-
--- | Checks if application expression does not end
-notEndApp :: IdrisParser ()
-notEndApp = do c <- indent; l <- lastIndent
-               when (c <= l) (fail "terminator")
-
--- | Checks that it is not end of block
-notEndBlock :: IdrisParser ()
-notEndBlock = do ist <- get
-                 case brace_stack ist of
-                      Just lvl : xs -> do i <- indent
-                                          isParen <- lookAheadMatches (char ')')
-                                          when (i < lvl || isParen) (fail "end of block")
-                      _ -> return ()
-
--- | Representation of an operation that can compare the current indentation with the last indentation, and an error message if it fails
-data IndentProperty = IndentProperty (Int -> Int -> Bool) String
-
--- | Allows comparison of indent, and fails if property doesn't hold
-indentPropHolds :: IndentProperty -> IdrisParser()
-indentPropHolds (IndentProperty op msg) = do
-  li <- lastIndent
-  i <- indent
-  when (not $ op i li) $ fail ("Wrong indention: " ++ msg)
-
--- | Greater-than indent property
-gtProp :: IndentProperty
-gtProp = IndentProperty (>) "should be greater than context indentation"
-
--- | Greater-than or equal to indent property
-gteProp :: IndentProperty
-gteProp = IndentProperty (>=) "should be greater than or equal context indentation"
-
--- | Equal indent property
-eqProp :: IndentProperty
-eqProp = IndentProperty (==) "should be equal to context indentation"
-
--- | Less-than indent property
-ltProp :: IndentProperty
-ltProp = IndentProperty (<) "should be less than context indentation"
-
--- | Less-than or equal to indent property
-lteProp :: IndentProperty
-lteProp = IndentProperty (<=) "should be less than or equal to context indentation"
-
-
--- | Checks that there are no braces that are not closed
-notOpenBraces :: IdrisParser ()
-notOpenBraces = do ist <- get
-                   when (hasNothing $ brace_stack ist) $ fail "end of input"
-  where hasNothing :: [Maybe a] -> Bool
-        hasNothing = any isNothing
 
 {- | Parses an accessibilty modifier (e.g. public, private) -}
 accessibility :: IdrisParser Accessibility

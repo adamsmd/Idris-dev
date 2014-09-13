@@ -39,7 +39,7 @@ defaultPkg = PkgDesc "" [] [] Nothing [] "" [] (sUN "") Nothing []
 
 parseDesc :: FilePath -> IO PkgDesc
 parseDesc fp = do p <- readFile fp
-                  case runparser pPkg defaultPkg fp p of
+                  case runparserLax pPkg defaultPkg fp p of
                        Failure err -> fail (show err)
                        Success x -> return x
 

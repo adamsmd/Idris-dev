@@ -1164,7 +1164,7 @@ process fn (CallsWho n) =
 process fn (MakeDoc s) =
   do     istate        <- getIState
          let names      = words s
-             parse n    | Success x <- runparser name istate fn n = Right x
+             parse n    | Success x <- runparserLax name istate fn n = Right x
              parse n    = Left n
              (bad, nss) = partitionEithers $ map parse names
          cd            <- runIO $ getCurrentDirectory
